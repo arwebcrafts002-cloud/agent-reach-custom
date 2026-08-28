@@ -153,6 +153,10 @@ async def doctor_status():
     except Exception as e:
         return {"output": f"Doctor check error: {str(e)}"}
 
+@app.get("/health")
+async def health_check():
+    return {"status": "ok", "service": "agent-reach-web"}
+
 @app.get("/", response_class=HTMLResponse)
 async def serve_index():
     return HTML_CONTENT
@@ -659,3 +663,9 @@ HTML_CONTENT = """<!DOCTYPE html>
 </body>
 </html>
 """
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", 8080))
+    uvicorn.run("web_app:app", host="0.0.0.0", port=port, log_level="info")
+
