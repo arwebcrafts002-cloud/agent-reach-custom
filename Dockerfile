@@ -1,4 +1,4 @@
-﻿# Production Dockerfile for Agent Reach Web App
+# Production Dockerfile for Agent Reach Web App
 FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \
