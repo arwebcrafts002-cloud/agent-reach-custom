@@ -7,9 +7,12 @@ services:
       dockerfile: Dockerfile
     container_name: agent-reach-service
     restart: unless-stopped
+    ports:
+      - "8080:8080"
     volumes:
       - agent_reach_data:/root/.agent-reach
     environment:
+      - PORT=8080
       - AGENT_REACH_LOG_LEVEL=INFO
     tty: true
 

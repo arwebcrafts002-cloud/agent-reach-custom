@@ -1,9 +1,10 @@
-﻿# Production Dockerfile for Agent Reach
+﻿# Production Dockerfile for Agent Reach Web App
 FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    DEBIAN_FRONTEND=noninteractive
+    DEBIAN_FRONTEND=noninteractive \
+    PORT=8080
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
@@ -24,8 +25,12 @@ WORKDIR /app
 COPY . /app
 
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -e .
+    pip install --no-cache-dir -e . && \
+    pip install --no-cache-dir -r requirements.txt
 
 RUN agent-reach install --env=auto --system || true
 
-CMD ["agent-reach", "doctor"]
+EXPOSE 8080
+
+# Railway provides $PORT at runtime; default to 8080 if not set
+CMD ["sh", "-c", "uvicorn web_app:app --host 0.0.0.0 --port ${PORT:-8080}"]
