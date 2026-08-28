@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 Agent Reach - Web UI & API Server
 Built with FastAPI to provide public web access on Railway / Docker.
@@ -147,8 +147,9 @@ async def extract_url(req: ExtractRequest):
 async def doctor_status():
     """Runs a quick doctor check and returns text."""
     try:
-        res = subprocess.run(["agent-reach", "doctor"], capture_output=True, text=True, timeout=15)
-        return {"output": res.stdout or res.stderr}
+        import sys
+        res = subprocess.run([sys.executable, "-m", "agent_reach.cli", "doctor"], capture_output=True, text=True, timeout=20)
+        return {"output": res.stdout or res.stderr or "Doctor completed."}
     except Exception as e:
         return {"output": f"Doctor check error: {str(e)}"}
 
