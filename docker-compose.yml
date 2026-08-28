@@ -1,0 +1,17 @@
+﻿version: '3.8'
+
+services:
+  agent-reach:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agent-reach-service
+    restart: unless-stopped
+    volumes:
+      - agent_reach_data:/root/.agent-reach
+    environment:
+      - AGENT_REACH_LOG_LEVEL=INFO
+    tty: true
+
+volumes:
+  agent_reach_data:
