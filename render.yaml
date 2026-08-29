@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: agent-reach-custom
+    env: docker
+    plan: free
+    region: oregon
+    dockerfilePath: Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
