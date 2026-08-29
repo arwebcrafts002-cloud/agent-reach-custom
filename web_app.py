@@ -46,7 +46,7 @@ def extract_youtube(url: str) -> Dict[str, Any]:
     try:
         # 1. Fetch metadata JSON
         meta_cmd = ["yt-dlp", "--dump-json", "--no-warnings", url]
-        meta_res = subprocess.run(meta_cmd, capture_output=True, text=True, timeout=30)
+        meta_res = subprocess.run(meta_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         
         metadata = {}
         if meta_res.returncode == 0 and meta_res.stdout.strip():
@@ -72,7 +72,7 @@ def extract_youtube(url: str) -> Dict[str, Any]:
                 "-o", out_template,
                 url
             ]
-            subprocess.run(sub_cmd, capture_output=True, text=True, timeout=45)
+            subprocess.run(sub_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=45)
             
             transcript = ""
             vtt_files = [f for f in os.listdir(tmpdir) if f.endswith(".vtt")]
@@ -148,7 +148,14 @@ async def doctor_status():
     """Runs a quick doctor check and returns text."""
     try:
         import sys
-        res = subprocess.run([sys.executable, "-m", "agent_reach.cli", "doctor"], capture_output=True, text=True, timeout=20)
+        res = subprocess.run(
+            [sys.executable, "-m", "agent_reach.cli", "doctor"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20
+        )
         return {"output": res.stdout or res.stderr or "Doctor completed."}
     except Exception as e:
         return {"output": f"Doctor check error: {str(e)}"}
