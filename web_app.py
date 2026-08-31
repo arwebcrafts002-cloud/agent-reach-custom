@@ -342,15 +342,24 @@ HTML_CONTENT = """<!DOCTYPE html>
             align-items: center;
         }
 
-        .logo {
+        .logo-row {
             display: flex;
             align-items: center;
             gap: 0.75rem;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
             font-size: 1.25rem;
             font-weight: 800;
+        }
+
+        .logo-title {
             background: var(--accent-gradient);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
+            white-space: nowrap;
         }
 
         .logo-badge {
@@ -361,7 +370,8 @@ HTML_CONTENT = """<!DOCTYPE html>
             background: rgba(59, 130, 246, 0.15);
             color: #60a5fa;
             border: 1px solid rgba(59, 130, 246, 0.3);
-            -webkit-text-fill-color: initial;
+            white-space: nowrap;
+            display: inline-block;
         }
 
         .nav-actions {
@@ -620,10 +630,6 @@ HTML_CONTENT = """<!DOCTYPE html>
             display: inline-block;
         }
 
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-
         footer {
             text-align: center;
             padding: 2rem 1.5rem;
@@ -632,13 +638,161 @@ HTML_CONTENT = """<!DOCTYPE html>
             border-top: 1px solid rgba(255, 255, 255, 0.05);
             margin-top: auto;
         }
+
+        /* Mobile Responsive Media Queries */
+        @media (max-width: 768px) {
+            .navbar {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 0.85rem;
+                padding: 0.85rem 1rem;
+            }
+
+            .logo-row {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                width: 100%;
+            }
+
+            .logo {
+                font-size: 1.15rem;
+                gap: 0.5rem;
+            }
+
+            .logo-badge {
+                font-size: 0.7rem;
+                padding: 0.15rem 0.5rem;
+            }
+
+            .nav-actions {
+                width: 100%;
+            }
+
+            .nav-actions .btn-secondary {
+                width: 100%;
+                justify-content: center;
+                padding: 0.65rem 1rem;
+                font-size: 0.85rem;
+            }
+
+            main {
+                padding: 1.25rem 1rem;
+            }
+
+            .hero {
+                margin-bottom: 1.5rem;
+            }
+
+            .hero h1 {
+                font-size: 1.65rem;
+                line-height: 1.25;
+                margin-bottom: 0.5rem;
+            }
+
+            .hero p {
+                font-size: 0.95rem;
+                line-height: 1.5;
+            }
+
+            .search-container {
+                padding: 1.25rem 1rem;
+                border-radius: 14px;
+                margin-bottom: 1.5rem;
+            }
+
+            .input-group {
+                flex-direction: column;
+                gap: 0.75rem;
+                width: 100%;
+            }
+
+            input[type="text"] {
+                width: 100%;
+                padding: 0.85rem 1rem;
+                font-size: 0.95rem;
+                border-radius: 8px;
+            }
+
+            .btn-primary {
+                width: 100%;
+                justify-content: center;
+                padding: 0.85rem 1.25rem;
+                font-size: 0.95rem;
+                border-radius: 8px;
+            }
+
+            .sample-chips {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 0.45rem;
+                margin-top: 1rem;
+            }
+
+            .sample-label {
+                font-size: 0.75rem;
+                margin-bottom: 0.15rem;
+            }
+
+            .chip {
+                padding: 0.45rem 0.75rem;
+                font-size: 0.8rem;
+                text-align: center;
+            }
+
+            .result-header {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 0.75rem;
+                padding: 1rem;
+            }
+
+            .result-header .btn-secondary {
+                width: 100%;
+                justify-content: center;
+            }
+
+            .result-body {
+                padding: 1rem;
+            }
+
+            .content-box {
+                padding: 0.85rem;
+                font-size: 0.825rem;
+                max-height: 420px;
+            }
+
+            .modal {
+                padding: 1rem;
+            }
+
+            .modal-card {
+                border-radius: 12px;
+            }
+
+            .modal-header {
+                padding: 1rem;
+            }
+
+            .modal-body {
+                padding: 1rem;
+            }
+
+            footer {
+                padding: 1.5rem 1rem;
+                font-size: 0.775rem;
+            }
+        }
     </style>
 </head>
 <body>
     <header>
         <div class="navbar">
-            <div class="logo">
-                👁️ Agent Reach <span class="logo-badge">Live Web Hub</span>
+            <div class="logo-row">
+                <div class="logo">
+                    <span class="logo-title">👁️ Agent Reach</span>
+                </div>
+                <span class="logo-badge">Live Web Hub</span>
             </div>
             <div class="nav-actions">
                 <button class="btn-secondary" onclick="openDoctorModal()">🩺 System Diagnostics</button>
