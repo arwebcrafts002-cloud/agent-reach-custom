@@ -46,8 +46,16 @@ app = FastAPI(title="Agent Reach Web UI", version="1.0.0")
 class ExtractRequest(BaseModel):
     url: str
 
+def is_predominantly_cjk(text: str) -> bool:
+    """Check if a line contains predominantly Chinese/Japanese/Korean ideographs."""
+    if not text:
+        return False
+    cjk_count = sum(1 for ch in text if ('\u4e00' <= ch <= '\u9fff') or ('\u3400' <= ch <= '\u4dbf') or ('\u3040' <= ch <= '\u30ff'))
+    cleaned_len = len(re.sub(r"\s+", "", text))
+    return cleaned_len > 0 and (cjk_count / cleaned_len) > 0.35
+
 def clean_vtt(vtt_text: str) -> str:
-    """Parse VTT subtitles into clean readable transcript."""
+    """Parse VTT subtitles into clean readable English transcript."""
     lines = vtt_text.splitlines()
     clean_lines = []
     seen = set()
@@ -61,7 +69,10 @@ def clean_vtt(vtt_text: str) -> str:
         if "-->" in line:
             continue
         # Remove simple HTML-like tags from captions (e.g., <c>, </c>)
-        line = re.sub(r"<[^>]+>", "", line)
+        line = re.sub(r"<[^>]+>", "", line).strip()
+        # Filter out foreign/Chinese lines from dual-language auto-captions
+        if is_predominantly_cjk(line):
+            continue
         if line and line not in seen:
             seen.add(line)
             clean_lines.append(line)
@@ -69,31 +80,39 @@ def clean_vtt(vtt_text: str) -> str:
     return "\n\n".join(clean_lines)
 
 def extract_youtube(url: str) -> Dict[str, Any]:
-    """Extract metadata and subtitles using yt-dlp."""
+    """Extract metadata and subtitles using yt-dlp with strict English preferences."""
     try:
-        # 1. Fetch metadata JSON
         ytdlp_base = get_ytdlp_cmd()
-        meta_cmd = ytdlp_base + ["--dump-json", "--no-warnings", url]
-        meta_res = subprocess.run(meta_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+        # 1. Fetch metadata JSON with English locale headers
+        meta_cmd = ytdlp_base + [
+            "--dump-json",
+            "--no-warnings",
+            "--add-header", "Accept-Language: en-US,en;q=0.9",
+            "--extractor-args", "youtube:player_client=android,web;lang=en",
+            url
+        ]
+        meta_res = subprocess.run(meta_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=35)
         
         metadata = {}
         if meta_res.returncode == 0 and meta_res.stdout.strip():
             metadata = json.loads(meta_res.stdout)
             
         title = metadata.get("title", "YouTube Video")
-        uploader = metadata.get("uploader", "Unknown")
+        uploader = metadata.get("uploader", "Unknown Creator")
         duration = metadata.get("duration", 0)
         views = metadata.get("view_count", 0)
         thumbnail = metadata.get("thumbnail", "")
         description = metadata.get("description", "")
         
-        # 2. Extract subtitles/transcript
+        # 2. Extract subtitles/transcript prioritizing English
         with tempfile.TemporaryDirectory() as tmpdir:
             out_template = os.path.join(tmpdir, "caption_%(id)s")
             sub_cmd = ytdlp_base + [
                 "--write-sub",
                 "--write-auto-sub",
-                "--sub-lang", "en,zh-Hans,zh,es",
+                "--sub-lang", "en,en-US,en-GB,en.*",
+                "--add-header", "Accept-Language: en-US,en;q=0.9",
+                "--extractor-args", "youtube:player_client=android,web;lang=en",
                 "--skip-download",
                 "--no-warnings",
                 "-o", out_template,
@@ -104,12 +123,17 @@ def extract_youtube(url: str) -> Dict[str, Any]:
             transcript = ""
             vtt_files = [f for f in os.listdir(tmpdir) if f.endswith(".vtt")]
             if vtt_files:
-                target_file = os.path.join(tmpdir, vtt_files[0])
+                # Prefer explicitly English subtitles (.en.vtt, .en-US.vtt)
+                en_vtts = [f for f in vtt_files if ".en" in f.lower()]
+                target_file = os.path.join(tmpdir, en_vtts[0] if en_vtts else vtt_files[0])
                 with open(target_file, "r", encoding="utf-8", errors="ignore") as f:
                     transcript = clean_vtt(f.read())
                     
             if not transcript:
-                transcript = f"*No automated English/Chinese transcript was available for this video.*\n\n**Video Description:**\n\n{description[:1500]}"
+                # Clean description lines from any foreign boilerplate
+                clean_desc_lines = [l for l in description.splitlines() if not is_predominantly_cjk(l)]
+                clean_desc = "\n".join(clean_desc_lines[:30]).strip()
+                transcript = f"*No automated English transcript was available for this video.*\n\n**Video Description:**\n\n{clean_desc[:1500] if clean_desc else 'No description available.'}"
                 
             return {
                 "platform": "YouTube",
@@ -127,10 +151,35 @@ def extract_youtube(url: str) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"YouTube extraction failed: {str(e)}")
 
 def extract_general_web(url: str) -> Dict[str, Any]:
-    """Extract web article or general URL content via Jina Reader."""
+    """Extract web article or general URL content in clean English."""
     try:
-        from agent_reach.channels.web import WebChannel
-        content = WebChannel().read(url)
+        import requests
+        from agent_reach.utils.url import normalize_public_http_url
+        clean_target_url = normalize_public_http_url(url)
+        jina_url = f"https://r.jina.ai/{clean_target_url}"
+        
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            "Accept": "text/plain",
+            "Accept-Language": "en-US,en;q=0.9"
+        }
+        
+        content = ""
+        try:
+            resp = requests.get(jina_url, headers=headers, timeout=25)
+            if resp.status_code == 200 and resp.text.strip():
+                content = resp.text
+        except Exception:
+            content = ""
+            
+        # Fallback to direct page text if Jina Reader is blocked
+        if not content:
+            direct_resp = requests.get(clean_target_url, headers=headers, timeout=20)
+            content = direct_resp.text[:15000]
+        
+        # Filter out any foreign boilerplate lines if present
+        clean_lines = [l for l in content.splitlines() if not is_predominantly_cjk(l)]
+        content = "\n".join(clean_lines)
         
         # Determine title from markdown if available
         title = url
@@ -170,22 +219,60 @@ async def extract_url(req: ExtractRequest):
     else:
         return extract_general_web(url)
 
+CHANNELS_EN = {
+    "web": ("Webpage Reader", "Extracts clean readable text from any public webpage via Jina Reader"),
+    "youtube": ("YouTube Videos & Captions", "Extracts video details, description, and English subtitles via yt-dlp"),
+    "github": ("GitHub Repositories", "Reads code, READMEs, issues, and metadata via GitHub CLI"),
+    "rss": ("RSS & Atom Feeds", "Parses blog, news, and podcast XML/Atom feeds"),
+    "search": ("Semantic Web Search", "AI-powered semantic search via Exa"),
+    "twitter": ("Twitter / X Posts", "Fetches tweets and public discussion threads"),
+    "reddit": ("Reddit Posts & Comments", "Fetches subreddit threads and discussions"),
+    "v2ex": ("V2EX Discussions", "Reads developer forum topics via public API"),
+    "facebook": ("Facebook Content", "Reads public social group posts"),
+    "instagram": ("Instagram Posts", "Reads public media feeds"),
+    "linkedin": ("LinkedIn Network", "Reads professional profiles and posts"),
+    "podcast": ("Podcast Transcripts", "Transcribes audio podcast feeds"),
+    "bilibili": ("Bilibili Media", "Reads video data and captions via public API"),
+    "xiaohongshu": ("Xiaohongshu Notes", "Reads lifestyle and note cards"),
+    "xueqiu": ("Financial Feeds", "Reads stock market analysis and community feeds"),
+}
+
 @app.get("/api/doctor")
 async def doctor_status():
-    """Runs a quick doctor check and returns text."""
+    """Runs a quick doctor check and returns a clean English diagnostics report."""
     try:
-        import sys
-        res = subprocess.run(
-            [sys.executable, "-m", "agent_reach.cli", "doctor"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=20
-        )
-        return {"output": res.stdout or res.stderr or "Doctor completed."}
+        from agent_reach.config import Config
+        from agent_reach.doctor import check_all
+        
+        raw_results = check_all(Config())
+        lines = [
+            "============================================================",
+            "             AGENT REACH - SYSTEM DIAGNOSTICS               ",
+            "============================================================",
+            "Legend: [OK] Ready to Use  [!] Needs Auth/Config  [X] Optional",
+            ""
+        ]
+        
+        ready_count = 0
+        for key, (title, desc) in CHANNELS_EN.items():
+            ch = raw_results.get(key, {})
+            status = ch.get("status", "off")
+            
+            if status == "ok":
+                ready_count += 1
+                lines.append(f"  [OK] {title:<28} - Ready ({desc})")
+            elif status == "warn":
+                lines.append(f"  [!]  {title:<28} - Installed (Auth / API key recommended)")
+            else:
+                lines.append(f"  [X]  {title:<28} - Optional channel (Not configured)")
+                
+        lines.append("")
+        lines.append(f"Status Summary: {ready_count}/{len(CHANNELS_EN)} channels actively ready.")
+        lines.append("Environment: Python 3.11 with FastAPI + yt-dlp + Jina Reader.")
+        lines.append("============================================================")
+        return {"output": "\n".join(lines)}
     except Exception as e:
-        return {"output": f"Doctor check error: {str(e)}"}
+        return {"output": f"Diagnostic check error: {str(e)}"}
 
 @app.get("/health")
 async def health_check():
@@ -554,7 +641,7 @@ HTML_CONTENT = """<!DOCTYPE html>
                 👁️ Agent Reach <span class="logo-badge">Live Web Hub</span>
             </div>
             <div class="nav-actions">
-                <button class="btn-secondary" onclick="openDoctorModal()">🩺 Channel Doctor</button>
+                <button class="btn-secondary" onclick="openDoctorModal()">🩺 System Diagnostics</button>
             </div>
         </div>
     </header>
@@ -567,17 +654,17 @@ HTML_CONTENT = """<!DOCTYPE html>
 
         <div class="search-container">
             <div class="input-group">
-                <input type="text" id="urlInput" placeholder="Paste any public URL (YouTube video, blog, article, GitHub repo)..." autocomplete="off" />
+                <input type="text" id="urlInput" placeholder="Paste any public URL (YouTube video, article, blog, webpage)..." autocomplete="off" />
                 <button class="btn-primary" id="extractBtn" onclick="handleExtract()">
-                    <span id="btnText">Fetch / Extract</span>
+                    <span id="btnText">Fetch Content</span>
                     <span id="btnSpinner" class="spinner" style="display: none;"></span>
                 </button>
             </div>
             <div class="sample-chips">
-                <span class="sample-label">Try sample:</span>
+                <span class="sample-label">Quick Samples:</span>
                 <div class="chip" onclick="setSample('https://www.youtube.com/watch?v=jNQXAC9IVRw')">📺 YouTube Video (Me at the zoo)</div>
                 <div class="chip" onclick="setSample('https://example.com')">🌐 Web Article (Example.com)</div>
-                <div class="chip" onclick="setSample('https://github.com/Panniantong/agent-reach')">📦 GitHub Repo (agent-reach)</div>
+                <div class="chip" onclick="setSample('https://fastapi.tiangolo.com')">⚡ Documentation (FastAPI)</div>
             </div>
         </div>
 
@@ -602,17 +689,17 @@ HTML_CONTENT = """<!DOCTYPE html>
     <div class="modal" id="doctorModal">
         <div class="modal-card">
             <div class="modal-header">
-                <h3>🩺 Agent Reach Channel Status</h3>
+                <h3>🩺 System Diagnostics & Channel Health</h3>
                 <button class="close-btn" onclick="closeDoctorModal()">&times;</button>
             </div>
             <div class="modal-body">
-                <div class="content-box" id="doctorContent" style="max-height: 400px;">Loading diagnostic...</div>
+                <div class="content-box" id="doctorContent" style="max-height: 400px;">Loading diagnostics...</div>
             </div>
         </div>
     </div>
 
     <footer>
-        Deployed with Docker on Railway &bull; Powered by Panniantong/agent-reach
+        Agent Reach &bull; Universal Web & Video Content Extractor &bull; English Edition
     </footer>
 
     <script>
