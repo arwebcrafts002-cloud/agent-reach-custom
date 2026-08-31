@@ -151,51 +151,110 @@ def extract_youtube(url: str) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"YouTube extraction failed: {str(e)}")
 
 def extract_general_web(url: str) -> Dict[str, Any]:
-    """Extract web article or general URL content in clean English."""
+    """Extract web article, SPA, or general URL content in clean English."""
     try:
         import requests
+        from bs4 import BeautifulSoup
         from agent_reach.utils.url import normalize_public_http_url
-        clean_target_url = normalize_public_http_url(url)
-        jina_url = f"https://r.jina.ai/{clean_target_url}"
         
-        headers = {
+        clean_target_url = normalize_public_http_url(url)
+        content = ""
+        title = url
+        author = "Web Reader"
+        platform = "Web (Jina Reader)"
+        
+        # 1. Attempt Jina Reader first
+        jina_url = f"https://r.jina.ai/{clean_target_url}"
+        jina_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
             "Accept": "text/plain",
             "Accept-Language": "en-US,en;q=0.9"
         }
         
-        content = ""
         try:
-            resp = requests.get(jina_url, headers=headers, timeout=25)
+            resp = requests.get(jina_url, headers=jina_headers, timeout=20)
             if resp.status_code == 200 and resp.text.strip():
-                content = resp.text
+                candidate = resp.text.strip()
+                # Check for upstream server error messages like 'Only HTML requests are supported'
+                invalid_markers = [
+                    '"error":',
+                    "Only HTML requests are supported",
+                    "403 Forbidden",
+                    "502 Bad Gateway",
+                    "Cloudflare Ray ID"
+                ]
+                if not any(m in candidate for m in invalid_markers) and len(candidate) > 100:
+                    content = candidate
         except Exception:
             content = ""
             
-        # Fallback to direct page text if Jina Reader is blocked
+        # 2. Fallback to Direct HTML Fetch with BeautifulSoup (Handles SPAs, Lovable, React, Next.js, Vite)
         if not content:
-            direct_resp = requests.get(clean_target_url, headers=headers, timeout=20)
-            content = direct_resp.text[:15000]
+            platform = "Web (Direct HTML Engine)"
+            browser_headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Sec-Ch-Ua": '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
+                "Sec-Ch-Ua-Mobile": "?0",
+                "Sec-Ch-Ua-Platform": '"Windows"',
+                "Upgrade-Insecure-Requests": "1"
+            }
+            direct_resp = requests.get(clean_target_url, headers=browser_headers, timeout=20)
+            if direct_resp.status_code == 200 and direct_resp.text.strip():
+                soup = BeautifulSoup(direct_resp.text, "html.parser")
+                
+                # Extract page title
+                if soup.title and soup.title.string:
+                    title = soup.title.string.strip()
+                    
+                # Extract meta description
+                meta_desc = soup.find("meta", attrs={"name": "description"}) or soup.find("meta", attrs={"property": "og:description"})
+                desc_text = meta_desc.get("content", "").strip() if meta_desc else ""
+                
+                # Extract OpenGraph site name or author
+                og_site = soup.find("meta", attrs={"property": "og:site_name"})
+                if og_site and og_site.get("content"):
+                    author = og_site.get("content").strip()
+                    
+                # Decompose non-content tags
+                for tag in soup(["script", "style", "noscript", "svg", "header", "footer"]):
+                    tag.decompose()
+                    
+                # Extract clean readable text
+                body_text = soup.get_text(separator="\n")
+                clean_lines = [l.strip() for l in body_text.splitlines() if l.strip() and not is_predominantly_cjk(l)]
+                
+                formatted_blocks = []
+                if title:
+                    formatted_blocks.append(f"# {title}")
+                if desc_text:
+                    formatted_blocks.append(f"> {desc_text}")
+                formatted_blocks.append("\n\n".join(clean_lines))
+                
+                content = "\n\n".join(formatted_blocks).strip()
+            else:
+                content = f"Unable to fetch web page content (HTTP {direct_resp.status_code})."
         
         # Filter out any foreign boilerplate lines if present
         clean_lines = [l for l in content.splitlines() if not is_predominantly_cjk(l)]
         content = "\n".join(clean_lines)
         
         # Determine title from markdown if available
-        title = url
-        first_lines = [l.strip() for l in content.splitlines() if l.strip()][:5]
-        for l in first_lines:
-            if l.startswith("Title:"):
-                title = l.replace("Title:", "").strip()
-                break
-            elif l.startswith("# "):
-                title = l.replace("# ", "").strip()
-                break
+        if title == url:
+            first_lines = [l.strip() for l in content.splitlines() if l.strip()][:5]
+            for l in first_lines:
+                if l.startswith("Title:"):
+                    title = l.replace("Title:", "").strip()
+                    break
+                elif l.startswith("# "):
+                    title = l.replace("# ", "").strip()
+                    break
                 
         return {
-            "platform": "Web (Jina Reader)",
+            "platform": platform,
             "title": title,
-            "author": "Web Reader",
+            "author": author,
             "metadata": {
                 "url": url,
                 "bytes": len(content.encode("utf-8"))
