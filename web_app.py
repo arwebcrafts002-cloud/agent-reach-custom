@@ -5,14 +5,41 @@ Built with FastAPI to provide public web access on Railway / Docker.
 """
 
 import os
+import sys
 import re
 import json
 import tempfile
 import subprocess
+import shutil
 from typing import Optional, Dict, Any
+
+# Ensure .venv/Scripts is in PATH for any subprocess calls (yt-dlp, ffmpeg, etc.)
+scripts_dir = os.path.dirname(sys.executable)
+if scripts_dir not in os.environ.get("PATH", ""):
+    os.environ["PATH"] = scripts_dir + os.pathsep + os.environ.get("PATH", "")
+
+# Ensure streams exist when running without console window (pythonw / Windows Service)
+log_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "server.log")
+if sys.stdout is None:
+    sys.stdout = open(log_file_path, "a", encoding="utf-8", buffering=1)
+if sys.stderr is None:
+    sys.stderr = open(log_file_path, "a", encoding="utf-8", buffering=1)
+
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+
+def get_ytdlp_cmd() -> list:
+    """Resolve the yt-dlp executable path reliably across Windows/Linux/Venv."""
+    s_dir = os.path.dirname(sys.executable)
+    for name in ["yt-dlp.exe", "yt-dlp"]:
+        candidate = os.path.join(s_dir, name)
+        if os.path.isfile(candidate):
+            return [candidate]
+    which = shutil.which("yt-dlp")
+    if which:
+        return [which]
+    return [sys.executable, "-m", "yt_dlp"]
 
 app = FastAPI(title="Agent Reach Web UI", version="1.0.0")
 
@@ -45,7 +72,8 @@ def extract_youtube(url: str) -> Dict[str, Any]:
     """Extract metadata and subtitles using yt-dlp."""
     try:
         # 1. Fetch metadata JSON
-        meta_cmd = ["yt-dlp", "--dump-json", "--no-warnings", url]
+        ytdlp_base = get_ytdlp_cmd()
+        meta_cmd = ytdlp_base + ["--dump-json", "--no-warnings", url]
         meta_res = subprocess.run(meta_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         
         metadata = {}
@@ -62,8 +90,7 @@ def extract_youtube(url: str) -> Dict[str, Any]:
         # 2. Extract subtitles/transcript
         with tempfile.TemporaryDirectory() as tmpdir:
             out_template = os.path.join(tmpdir, "caption_%(id)s")
-            sub_cmd = [
-                "yt-dlp",
+            sub_cmd = ytdlp_base + [
                 "--write-sub",
                 "--write-auto-sub",
                 "--sub-lang", "en,zh-Hans,zh,es",
@@ -674,5 +701,5 @@ HTML_CONTENT = """<!DOCTYPE html>
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8080))
-    uvicorn.run("web_app:app", host="0.0.0.0", port=port, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
 
