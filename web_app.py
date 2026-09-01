@@ -19,11 +19,14 @@ if scripts_dir not in os.environ.get("PATH", ""):
     os.environ["PATH"] = scripts_dir + os.pathsep + os.environ.get("PATH", "")
 
 # Ensure streams exist when running without console window (pythonw / Windows Service)
-log_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "server.log")
-if sys.stdout is None:
-    sys.stdout = open(log_file_path, "a", encoding="utf-8", buffering=1)
-if sys.stderr is None:
-    sys.stderr = open(log_file_path, "a", encoding="utf-8", buffering=1)
+try:
+    log_file_path = os.path.join(tempfile.gettempdir(), "server.log")
+    if sys.stdout is None:
+        sys.stdout = open(log_file_path, "a", encoding="utf-8", buffering=1)
+    if sys.stderr is None:
+        sys.stderr = open(log_file_path, "a", encoding="utf-8", buffering=1)
+except Exception:
+    pass
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
@@ -79,74 +82,115 @@ def clean_vtt(vtt_text: str) -> str:
             
     return "\n\n".join(clean_lines)
 
+def extract_youtube_video_id(url: str) -> Optional[str]:
+    """Extract 11-character YouTube video ID from various URL formats."""
+    patterns = [
+        r"(?:v=|\/)([0-9A-Za-z_-]{11}).*",
+        r"(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|shorts\/|watch\?v=))([0-9A-Za-z_-]{11})"
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    return None
+
 def extract_youtube(url: str) -> Dict[str, Any]:
-    """Extract metadata and subtitles using yt-dlp with strict English preferences."""
+    """Extract metadata and subtitles using multi-tier engine (YouTubeTranscriptApi + oEmbed + yt_dlp)."""
     try:
-        ytdlp_base = get_ytdlp_cmd()
-        # 1. Fetch metadata JSON with English locale headers
-        meta_cmd = ytdlp_base + [
-            "--dump-json",
-            "--no-warnings",
-            "--add-header", "Accept-Language: en-US,en;q=0.9",
-            "--extractor-args", "youtube:player_client=android,web;lang=en",
-            url
-        ]
-        meta_res = subprocess.run(meta_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=35)
+        video_id = extract_youtube_video_id(url)
+        title = "YouTube Video"
+        uploader = "YouTube Creator"
+        thumbnail = ""
+        channel_url = ""
+        transcript = ""
         
-        metadata = {}
-        if meta_res.returncode == 0 and meta_res.stdout.strip():
-            metadata = json.loads(meta_res.stdout)
-            
-        title = metadata.get("title", "YouTube Video")
-        uploader = metadata.get("uploader", "Unknown Creator")
-        duration = metadata.get("duration", 0)
-        views = metadata.get("view_count", 0)
-        thumbnail = metadata.get("thumbnail", "")
-        description = metadata.get("description", "")
-        
-        # 2. Extract subtitles/transcript prioritizing English
-        with tempfile.TemporaryDirectory() as tmpdir:
-            out_template = os.path.join(tmpdir, "caption_%(id)s")
-            sub_cmd = ytdlp_base + [
-                "--write-sub",
-                "--write-auto-sub",
-                "--sub-lang", "en,en-US,en-GB,en.*",
-                "--add-header", "Accept-Language: en-US,en;q=0.9",
-                "--extractor-args", "youtube:player_client=android,web;lang=en",
-                "--skip-download",
-                "--no-warnings",
-                "-o", out_template,
-                url
-            ]
-            subprocess.run(sub_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=45)
-            
-            transcript = ""
-            vtt_files = [f for f in os.listdir(tmpdir) if f.endswith(".vtt")]
-            if vtt_files:
-                # Prefer explicitly English subtitles (.en.vtt, .en-US.vtt)
-                en_vtts = [f for f in vtt_files if ".en" in f.lower()]
-                target_file = os.path.join(tmpdir, en_vtts[0] if en_vtts else vtt_files[0])
-                with open(target_file, "r", encoding="utf-8", errors="ignore") as f:
-                    transcript = clean_vtt(f.read())
-                    
-            if not transcript:
-                # Clean description lines from any foreign boilerplate
-                clean_desc_lines = [l for l in description.splitlines() if not is_predominantly_cjk(l)]
-                clean_desc = "\n".join(clean_desc_lines[:30]).strip()
-                transcript = f"*No automated English transcript was available for this video.*\n\n**Video Description:**\n\n{clean_desc[:1500] if clean_desc else 'No description available.'}"
-                
-            return {
-                "platform": "YouTube",
-                "title": title,
-                "author": uploader,
-                "metadata": {
-                    "duration_seconds": duration,
-                    "views": views,
-                    "thumbnail": thumbnail,
-                    "channel_url": metadata.get("channel_url", "")
-                },
-                "content": transcript
-            }
+        # 1. Fetch metadata via official oEmbed (Fast & zero bot check)
+        if video_id:
+            try:
+                import requests
+                oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+                r = requests.get(oembed_url, timeout=10)
+                if r.status_code == 200:
+                    meta = r.json()
+                    title = meta.get("title", title)
+                    uploader = meta.get("author_name", uploader)
+                    thumbnail = meta.get("thumbnail_url", "")
+                    channel_url = meta.get("author_url", "")
+            except Exception:
+                pass
+
+        # 2. Fetch transcript via youtube_transcript_api (Zero bot block on cloud/Vercel)
+        if video_id:
+            try:
+                from youtube_transcript_api import YouTubeTranscriptApi
+                api = YouTubeTranscriptApi()
+                transcripts = api.list(video_id)
+                res = None
+                for t in transcripts:
+                    if t.language_code.startswith("en"):
+                        res = t.fetch()
+                        break
+                if not res:
+                    for t in transcripts:
+                        if getattr(t, "is_translatable", False):
+                            res = t.translate("en").fetch()
+                            break
+                if res:
+                    lines = []
+                    for item in res:
+                        txt = item["text"] if isinstance(item, dict) else item.text
+                        clean_txt = re.sub(r"<[^>]+>", "", txt).strip()
+                        if clean_txt and not is_predominantly_cjk(clean_txt):
+                            lines.append(clean_txt)
+                    if lines:
+                        transcript = "\n\n".join(lines)
+            except Exception:
+                transcript = ""
+
+        # 3. Fallback to yt_dlp if transcript is still empty
+        if not transcript:
+            try:
+                import yt_dlp
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    out_template = os.path.join(tmpdir, "caption_%(id)s")
+                    ydl_opts = {
+                        "skip_download": True,
+                        "writesubtitles": True,
+                        "writeautomaticsub": True,
+                        "subtitleslangs": ["en", "en-US", "en-GB"],
+                        "outtmpl": out_template,
+                        "quiet": True,
+                        "no_warnings": True,
+                    }
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        metadata = ydl.extract_info(url, download=True)
+                        if title == "YouTube Video":
+                            title = metadata.get("title", title)
+                        if uploader == "YouTube Creator":
+                            uploader = metadata.get("uploader", uploader)
+                    vtt_files = [f for f in os.listdir(tmpdir) if f.endswith(".vtt")]
+                    if vtt_files:
+                        en_vtts = [f for f in vtt_files if ".en" in f.lower()]
+                        target_file = os.path.join(tmpdir, en_vtts[0] if en_vtts else vtt_files[0])
+                        with open(target_file, "r", encoding="utf-8", errors="ignore") as f:
+                            transcript = clean_vtt(f.read())
+            except Exception:
+                pass
+
+        if not transcript:
+            transcript = "*No automated English transcript was available for this video.*"
+
+        return {
+            "platform": "YouTube",
+            "title": title,
+            "author": uploader,
+            "metadata": {
+                "thumbnail": thumbnail,
+                "channel_url": channel_url,
+                "video_id": video_id or ""
+            },
+            "content": transcript
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"YouTube extraction failed: {str(e)}")
 
